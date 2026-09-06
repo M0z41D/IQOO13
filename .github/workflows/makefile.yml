@@ -10,18 +10,16 @@ permissions:
   contents: write
 
 env:
-  # Default NDK version to download. Ubah jika perlu (mis. r29).
-  NDK_VERSION: r21e
+  # Align NDK with Makefile DEFAULT_NDK_ROOT
+  NDK_VERSION: r29
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    outputs:
-      asset-paths: ${{ steps.collect.outputs.files }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -32,14 +30,13 @@ jobs:
 
       - name: Prepare runner temp NDK cache dir
         run: |
-          # Use RUNNER_TEMP which is provided by runner environment
           mkdir -p "${RUNNER_TEMP}/android-ndk-cache"
           echo "NDK_CACHE_DIR=${RUNNER_TEMP}/android-ndk-cache" >> $GITHUB_ENV
 
       - name: Download Android NDK (cached)
         id: download-ndk
         run: |
-          set -e
+          set -euo pipefail
           ARCHIVE_NAME="android-ndk-${NDK_VERSION}-linux-x86_64.zip"
           DOWNLOAD_URL="https://dl.google.com/android/repository/${ARCHIVE_NAME}"
           DEST_DIR="${NDK_CACHE_DIR}/android-ndk-${NDK_VERSION}"
@@ -50,7 +47,6 @@ jobs:
             curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" "${DOWNLOAD_URL}"
             echo "Extracting to ${NDK_CACHE_DIR} ..."
             unzip -q "${RUNNER_TEMP}/${ARCHIVE_NAME}" -d "${NDK_CACHE_DIR}"
-            # normalize extracted folder to DEST_DIR if needed
             if [ ! -d "${DEST_DIR}" ]; then
               EXTRACTED=$(find "${NDK_CACHE_DIR}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
               if [ -n "${EXTRACTED}" ]; then
@@ -58,33 +54,40 @@ jobs:
               fi
             fi
           fi
-          echo "ndk_root=${DEST_DIR}" >> $GITHUB_OUTPUT
+          printf '%s\n' "ndk_root=${DEST_DIR}" >> $GITHUB_OUTPUT
 
       - name: Set NDK env for Makefile
-        id: set-ndk-env
         run: |
           echo "NDK_ROOT=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
-          echo "PATH=${{ steps.download-ndk.outputs.ndk_root }}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+          echo "${{ steps.download-ndk.outputs.ndk_root }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Show make info (diagnostics)
         run: |
           echo "Makefile info:"
           make info || true
+          echo "Environment summary:"
+          echo "NDK_ROOT=$NDK_ROOT"
+          which aarch64-linux-android${API:-35}-clang || true
+          clang --version || true
 
       - name: Build (make preload)
         run: |
           set -euo pipefail
           make preload -j$(nproc)
+
+      - name: List produced artifacts
+        run: |
           echo "Produced .so files:"
-          find . -type f -name "*.so" -print || true
+          find . -type f -name "*.so" -not -path "./.git/*" -print || true
+          echo "Build tree:"
+          find build -maxdepth 3 -type f -print || true
 
       - name: Collect .so assets
         id: collect
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p release_assets
-          # find produced .so files excluding .git and .github
           mapfile -t SO_FILES < <(find . -type f -name '*.so' -not -path './.git/*' -not -path './.github/*')
           if [ ${#SO_FILES[@]} -eq 0 ]; then
             echo "No .so files were produced." >&2
@@ -103,7 +106,7 @@ jobs:
             idx=$((idx+1))
           done
           FILE_LIST=$(echo $FILE_LIST)
-          echo "files=$FILE_LIST" >> $GITHUB_OUTPUT
+          printf '%s\n' "files=${FILE_LIST}" >> $GITHUB_OUTPUT
 
       - name: Create Release and upload .so asset(s)
         if: startsWith(github.ref, 'refs/tags/')
