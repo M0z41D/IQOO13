@@ -1,10 +1,19 @@
 API ?= 35
 PROJECT ?= iQOO-13
-OUTDIR ?= build/$(PROJECT)/bin
+KERNEL_VERSION ?= 6.6.89
+OUTDIR ?= build/$(PROJECT)/$(KERNEL_VERSION)/bin
 EMBEDDIR ?= build/embed
 
 TARGET_DIR := .
-TARGET_HEADER := target.h
+
+# Select target header based on kernel version
+ifeq ($(KERNEL_VERSION),6.6.89)
+  TARGET_HEADER := target.h
+else ifeq ($(KERNEL_VERSION),6.6.127)
+  TARGET_HEADER := target-6.6.127.h
+else
+  $(error Unsupported KERNEL_VERSION=$(KERNEL_VERSION). Supported: 6.6.89, 6.6.127)
+endif
 
 ifeq ($(wildcard $(TARGET_HEADER)),)
 $(error unknown PROJECT=$(PROJECT), missing $(TARGET_HEADER))
@@ -80,9 +89,9 @@ COMMON_CFLAGS := -O2 -g0 -Wall -Wextra -I.
 PIE_CFLAGS := -fPIE -pie $(COMMON_CFLAGS)
 SO_CFLAGS := -fPIC $(COMMON_CFLAGS)
 WARN_CFLAGS := -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
-TARGET_CFLAGS := -DTARGET_CONFIG_H=\"target.h\"
+TARGET_CFLAGS := -DTARGET_CONFIG_H=\"$(TARGET_HEADER)\"
 
-.PHONY: all preload clean info list-projects
+.PHONY: all preload clean info list-projects build-all
 
 all: preload
 
@@ -104,8 +113,16 @@ $(PRELOAD): $(PRELOAD_SRCS) $(EMBED_SU) $(TARGET_HEADER) offset.h common.h kerne
 	  -shared -o $@ -pthread
 	sha256sum $@
 
+build-all:
+	@echo "Building for all supported kernel versions..."
+	$(MAKE) KERNEL_VERSION=6.6.89 clean preload
+	$(MAKE) KERNEL_VERSION=6.6.127 clean preload
+	@echo "Build complete! Binaries in build/$(PROJECT)/*/bin/"
+
 info:
 	@echo "PROJECT=$(PROJECT)"
+	@echo "KERNEL_VERSION=$(KERNEL_VERSION)"
+	@echo "TARGET_HEADER=$(TARGET_HEADER)"
 	@echo "TARGET_DIR=$(TARGET_DIR)"
 	@echo "TARGET_CC=$(TARGET_CC)"
 	@echo "TARGET_FLAGS=$(TARGET_FLAGS)"
@@ -117,6 +134,11 @@ info:
 
 list-projects:
 	@echo "iQOO-13"
+
+list-kernels:
+	@echo "Supported kernel versions:"
+	@echo "  6.6.89  (default)"
+	@echo "  6.6.127"
 
 clean:
 	rm -rf build
