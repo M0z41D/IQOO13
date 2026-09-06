@@ -10,10 +10,8 @@ permissions:
   contents: write
 
 env:
-  # Default NDK version to download. Ubah ke r29 jika Anda ingin mengikuti Makefile DEFAULT_NDK_ROOT.
+  # Default NDK version to download. Ubah jika perlu (mis. r29).
   NDK_VERSION: r21e
-  # lokasi cache NDK di runner (Makefile default mencari $(HOME)/android-ndk-cache/android-ndk-r29)
-  NDK_CACHE_DIR: ${{ runner.temp }}/android-ndk-cache
 
 jobs:
   build-and-release:
@@ -30,11 +28,13 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential clang make unzip curl lld osslsigncode
+          sudo apt-get install -y build-essential clang make unzip curl lld
 
-      - name: Prepare NDK cache dir
+      - name: Prepare runner temp NDK cache dir
         run: |
-          mkdir -p "${NDK_CACHE_DIR}"
+          # Use RUNNER_TEMP which is provided by runner environment
+          mkdir -p "${RUNNER_TEMP}/android-ndk-cache"
+          echo "NDK_CACHE_DIR=${RUNNER_TEMP}/android-ndk-cache" >> $GITHUB_ENV
 
       - name: Download Android NDK (cached)
         id: download-ndk
@@ -48,12 +48,10 @@ jobs:
           else
             echo "Downloading ${DOWNLOAD_URL} ..."
             curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" "${DOWNLOAD_URL}"
-            echo "Extracting to ${DEST_DIR} ..."
-            mkdir -p "${DEST_DIR}"
+            echo "Extracting to ${NDK_CACHE_DIR} ..."
             unzip -q "${RUNNER_TEMP}/${ARCHIVE_NAME}" -d "${NDK_CACHE_DIR}"
-            # unzip will produce a directory; normalize to expected DEST_DIR if needed
+            # normalize extracted folder to DEST_DIR if needed
             if [ ! -d "${DEST_DIR}" ]; then
-              # try find the extracted folder
               EXTRACTED=$(find "${NDK_CACHE_DIR}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
               if [ -n "${EXTRACTED}" ]; then
                 mv "${EXTRACTED}" "${DEST_DIR}"
@@ -66,9 +64,8 @@ jobs:
         id: set-ndk-env
         run: |
           echo "NDK_ROOT=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
-          # Also set ANDROID_NDK_HOME for other tools
           echo "ANDROID_NDK_HOME=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
-          echo "PATH=${{ steps.download-ndk.outputs.ndk_root }}/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}" >> $GITHUB_ENV
+          echo "PATH=${{ steps.download-ndk.outputs.ndk_root }}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
 
       - name: Show make info (diagnostics)
         run: |
@@ -78,9 +75,7 @@ jobs:
       - name: Build (make preload)
         run: |
           set -euo pipefail
-          # use parallel make; Makefile default target 'preload' produces preload.so
           make preload -j$(nproc)
-          # show produced .so files for debugging
           echo "Produced .so files:"
           find . -type f -name "*.so" -print || true
 
@@ -107,10 +102,8 @@ jobs:
             FILE_LIST="${FILE_LIST} ${dest}"
             idx=$((idx+1))
           done
-          # Trim leading whitespace
           FILE_LIST=$(echo $FILE_LIST)
           echo "files=$FILE_LIST" >> $GITHUB_OUTPUT
-          echo "::set-output name=files::$FILE_LIST"
 
       - name: Create Release and upload .so asset(s)
         if: startsWith(github.ref, 'refs/tags/')
