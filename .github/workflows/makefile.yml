@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -137,8 +137,11 @@ jobs:
           echo "Produced .so files:"
           find . -type f -name "*.so" -not -path "./.git/*" -print || true
           echo ""
-          echo "Build tree:"
-          find build -maxdepth 5 -type f -print 2>/dev/null | head -50 || true
+          echo "Build tree (top 30 files):"
+          find build -maxdepth 5 -type f -print 2>/dev/null | head -30 || true
+          echo ""
+          echo "Full build directory structure:"
+          ls -laR build/ 2>/dev/null | head -100 || true
 
       - name: Collect artifacts (.so per kernel)
         id: collect
@@ -147,10 +150,19 @@ jobs:
           mkdir -p release_assets
           
           echo "Collecting artifacts..."
-          mapfile -t FILES < <(find build -type f -name "*.so" -not -path './.git/*' -not -path './.github/*' | sort)
+          echo "Current directory: $(pwd)"
+          echo "Build directory contents:"
+          ls -la build/ 2>/dev/null || echo "No build directory"
+          
+          # Collect .so files from build directories
+          mapfile -t FILES < <(find build -type f -name "*.so" 2>/dev/null | sort)
+          
+          echo "Found ${#FILES[@]} .so files"
           
           if [ ${#FILES[@]} -eq 0 ]; then
             echo "ERROR: Tidak ada *.so ditemukan di build directory." >&2
+            echo "Listing all build artifacts:"
+            find build -type f 2>/dev/null | head -20 || true
             exit 1
           fi
           
@@ -159,6 +171,8 @@ jobs:
           for f in "${FILES[@]}"; do
             base=$(basename "$f")
             dir=$(dirname "$f")
+            
+            echo "Processing: $f (dir: $dir)"
             
             if [[ "$dir" == *"6.6.89"* ]]; then
               dest="release_assets/preload_6.6.89.so"
@@ -192,12 +206,13 @@ jobs:
           echo "Collected ${#DESTS[@]} file(s)"
 
       - name: Display collected artifacts
+        if: success()
         run: |
           echo "=== Collected Artifacts ==="
           ls -lah release_assets/
           echo ""
           echo "SHA256 checksums:"
-          sha256sum release_assets/* || true
+          sha256sum release_assets/*
 
       - name: Upload artifacts (untuk semua kernel versions)
         uses: actions/upload-artifact@v4
@@ -223,14 +238,13 @@ jobs:
 
       - name: Create Release and upload asset(s)
         if: steps.rel.outputs.create == 'true'
-        uses: ncipollo/release-action@v1
+        uses: softprops/action-gh-release@v2
         with:
-          tag: ${{ steps.rel.outputs.tag }}
-          name: Release ${{ steps.rel.outputs.tag }}
-          files: ${{ steps.collect.outputs.files }}
+          tag_name: ${{ steps.rel.outputs.tag }}
+          files: release_assets/*
           draft: false
           prerelease: false
-          allowUpdates: true
+          generate_release_notes: false
           body: |
             # Build Details
             - **Kernel Versions**: ${{ steps.kernels.outputs.versions }}
@@ -255,9 +269,10 @@ jobs:
             echo "### Results"
             echo "- **Release Created**: \`${{ steps.rel.outputs.create }}\`"
             echo "- **Release Tag**: \`${{ steps.rel.outputs.tag }}\`"
+            echo "- **Artifacts Status**: ✅ Uploaded"
             echo ""
-            echo "### Artifacts Available"
-            echo "Download dari **Artifacts** section"
+            echo "### Download Artifacts"
+            echo "Visit **Actions** → workflow run → **Artifacts** section"
             echo "- preload_6.6.89.so"
             echo "- preload_6.6.127.so"
           } >> "$GITHUB_STEP_SUMMARY"
