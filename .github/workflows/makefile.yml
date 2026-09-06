@@ -1,0 +1,123 @@
+name: Build and publish .so release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Default NDK version to download. Ubah ke r29 jika Anda ingin mengikuti Makefile DEFAULT_NDK_ROOT.
+  NDK_VERSION: r21e
+  # lokasi cache NDK di runner (Makefile default mencari $(HOME)/android-ndk-cache/android-ndk-r29)
+  NDK_CACHE_DIR: ${{ runner.temp }}/android-ndk-cache
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    outputs:
+      asset-paths: ${{ steps.collect.outputs.files }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential clang make unzip curl lld osslsigncode
+
+      - name: Prepare NDK cache dir
+        run: |
+          mkdir -p "${NDK_CACHE_DIR}"
+
+      - name: Download Android NDK (cached)
+        id: download-ndk
+        run: |
+          set -e
+          ARCHIVE_NAME="android-ndk-${NDK_VERSION}-linux-x86_64.zip"
+          DOWNLOAD_URL="https://dl.google.com/android/repository/${ARCHIVE_NAME}"
+          DEST_DIR="${NDK_CACHE_DIR}/android-ndk-${NDK_VERSION}"
+          if [ -d "${DEST_DIR}" ]; then
+            echo "NDK already downloaded at ${DEST_DIR}"
+          else
+            echo "Downloading ${DOWNLOAD_URL} ..."
+            curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" "${DOWNLOAD_URL}"
+            echo "Extracting to ${DEST_DIR} ..."
+            mkdir -p "${DEST_DIR}"
+            unzip -q "${RUNNER_TEMP}/${ARCHIVE_NAME}" -d "${NDK_CACHE_DIR}"
+            # unzip will produce a directory; normalize to expected DEST_DIR if needed
+            if [ ! -d "${DEST_DIR}" ]; then
+              # try find the extracted folder
+              EXTRACTED=$(find "${NDK_CACHE_DIR}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
+              if [ -n "${EXTRACTED}" ]; then
+                mv "${EXTRACTED}" "${DEST_DIR}"
+              fi
+            fi
+          fi
+          echo "ndk_root=${DEST_DIR}" >> $GITHUB_OUTPUT
+
+      - name: Set NDK env for Makefile
+        id: set-ndk-env
+        run: |
+          echo "NDK_ROOT=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
+          # Also set ANDROID_NDK_HOME for other tools
+          echo "ANDROID_NDK_HOME=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
+          echo "PATH=${{ steps.download-ndk.outputs.ndk_root }}/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}" >> $GITHUB_ENV
+
+      - name: Show make info (diagnostics)
+        run: |
+          echo "Makefile info:"
+          make info || true
+
+      - name: Build (make preload)
+        run: |
+          set -euo pipefail
+          # use parallel make; Makefile default target 'preload' produces preload.so
+          make preload -j$(nproc)
+          # show produced .so files for debugging
+          echo "Produced .so files:"
+          find . -type f -name "*.so" -print || true
+
+      - name: Collect .so assets
+        id: collect
+        run: |
+          set -e
+          mkdir -p release_assets
+          # find produced .so files excluding .git and .github
+          mapfile -t SO_FILES < <(find . -type f -name '*.so' -not -path './.git/*' -not -path './.github/*')
+          if [ ${#SO_FILES[@]} -eq 0 ]; then
+            echo "No .so files were produced." >&2
+            exit 1
+          fi
+          FILE_LIST=""
+          idx=0
+          for f in "${SO_FILES[@]}"; do
+            base=$(basename "$f")
+            dest="release_assets/${base}"
+            if [ -e "$dest" ]; then
+              dest="release_assets/${idx}_${base}"
+            fi
+            cp "$f" "$dest"
+            FILE_LIST="${FILE_LIST} ${dest}"
+            idx=$((idx+1))
+          done
+          # Trim leading whitespace
+          FILE_LIST=$(echo $FILE_LIST)
+          echo "files=$FILE_LIST" >> $GITHUB_OUTPUT
+          echo "::set-output name=files::$FILE_LIST"
+
+      - name: Create Release and upload .so asset(s)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          files: ${{ steps.collect.outputs.files }}
+          draft: false
+          prerelease: false
