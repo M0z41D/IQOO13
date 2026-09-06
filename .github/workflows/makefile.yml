@@ -37,14 +37,24 @@ jobs:
         id: download-ndk
         run: |
           set -euo pipefail
-          ARCHIVE_NAME="android-ndk-${NDK_VERSION}-linux-x86_64.zip"
+          # FIX: Sejak NDK r23+, arsip Linux bernama "android-ndk-rXX-linux.zip"
+          # (TANPA suffix -x86_64). Nama lama menyebabkan 404 -> curl exit 22.
+          ARCHIVE_NAME="android-ndk-${NDK_VERSION}-linux.zip"
           DOWNLOAD_URL="https://dl.google.com/android/repository/${ARCHIVE_NAME}"
           DEST_DIR="${NDK_CACHE_DIR}/android-ndk-${NDK_VERSION}"
+
           if [ -d "${DEST_DIR}" ]; then
             echo "NDK already downloaded at ${DEST_DIR}"
           else
             echo "Downloading ${DOWNLOAD_URL} ..."
-            curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" "${DOWNLOAD_URL}"
+            if ! curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" "${DOWNLOAD_URL}"; then
+              # Fallback: pola nama lama (hanya berlaku untuk NDK <= r22)
+              LEGACY_NAME="android-ndk-${NDK_VERSION}-linux-x86_64.zip"
+              echo "Primary URL failed, trying legacy name ${LEGACY_NAME} ..."
+              curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" \
+                "https://dl.google.com/android/repository/${LEGACY_NAME}"
+            fi
+
             echo "Extracting to ${NDK_CACHE_DIR} ..."
             unzip -q "${RUNNER_TEMP}/${ARCHIVE_NAME}" -d "${NDK_CACHE_DIR}"
             if [ ! -d "${DEST_DIR}" ]; then
