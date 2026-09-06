@@ -5,17 +5,23 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag untuk Release (mis. v1.0.0). Kosongkan jika hanya ingin build.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 env:
-  # Align NDK with Makefile DEFAULT_NDK_ROOT
+  # Selaras dengan Makefile DEFAULT_NDK_ROOT
   NDK_VERSION: r29
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -28,43 +34,52 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y build-essential clang make unzip curl lld
 
-      - name: Prepare runner temp NDK cache dir
-        run: |
-          mkdir -p "${RUNNER_TEMP}/android-ndk-cache"
-          echo "NDK_CACHE_DIR=${RUNNER_TEMP}/android-ndk-cache" >> $GITHUB_ENV
+      # Cache arsip zip NDK agar run berikutnya tidak download ulang ±780 MB
+      - name: Restore NDK archive cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ndk.zip
+          key: ndk-${{ env.NDK_VERSION }}-linux-zip
 
-      - name: Download Android NDK (cached)
+      - name: Download & extract Android NDK
         id: download-ndk
         run: |
           set -euo pipefail
-          # FIX: Sejak NDK r23+, arsip Linux bernama "android-ndk-rXX-linux.zip"
-          # (TANPA suffix -x86_64). Nama lama menyebabkan 404 -> curl exit 22.
+          # FIX: nama arsip resmi sejak NDK r23+ adalah android-ndk-rXX-linux.zip
+          # (TANPA -x86_64). Nama lama menyebabkan 404 -> curl exit 22.
           ARCHIVE_NAME="android-ndk-${NDK_VERSION}-linux.zip"
           DOWNLOAD_URL="https://dl.google.com/android/repository/${ARCHIVE_NAME}"
-          DEST_DIR="${NDK_CACHE_DIR}/android-ndk-${NDK_VERSION}"
+          ZIP="${RUNNER_TEMP}/ndk.zip"
+          CACHE_DIR="${RUNNER_TEMP}/android-ndk-cache"
+          DEST_DIR="${CACHE_DIR}/android-ndk-${NDK_VERSION}"
 
-          if [ -d "${DEST_DIR}" ]; then
-            echo "NDK already downloaded at ${DEST_DIR}"
+          if [ -f "${ZIP}" ]; then
+            echo "Arsip NDK ditemukan dari cache."
           else
             echo "Downloading ${DOWNLOAD_URL} ..."
-            if ! curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" "${DOWNLOAD_URL}"; then
-              # Fallback: pola nama lama (hanya berlaku untuk NDK <= r22)
-              LEGACY_NAME="android-ndk-${NDK_VERSION}-linux-x86_64.zip"
-              echo "Primary URL failed, trying legacy name ${LEGACY_NAME} ..."
-              curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${ARCHIVE_NAME}" \
-                "https://dl.google.com/android/repository/${LEGACY_NAME}"
-            fi
+            curl -fsSL --retry 3 -o "${ZIP}" "${DOWNLOAD_URL}"
+          fi
 
-            echo "Extracting to ${NDK_CACHE_DIR} ..."
-            unzip -q "${RUNNER_TEMP}/${ARCHIVE_NAME}" -d "${NDK_CACHE_DIR}"
+          if [ -d "${DEST_DIR}" ]; then
+            echo "NDK sudah diekstrak di ${DEST_DIR}"
+          else
+            echo "Extracting ..."
+            mkdir -p "${CACHE_DIR}"
+            unzip -q "${ZIP}" -d "${CACHE_DIR}"
             if [ ! -d "${DEST_DIR}" ]; then
-              EXTRACTED=$(find "${NDK_CACHE_DIR}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
+              EXTRACTED=$(find "${CACHE_DIR}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
               if [ -n "${EXTRACTED}" ]; then
                 mv "${EXTRACTED}" "${DEST_DIR}"
               fi
             fi
           fi
-          printf '%s\n' "ndk_root=${DEST_DIR}" >> $GITHUB_OUTPUT
+
+          # Validasi: pastikan toolchain benar-benar ada sebelum lanjut
+          if [ ! -x "${DEST_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+            echo "ERROR: NDK tidak valid di ${DEST_DIR}" >&2
+            exit 1
+          fi
+          printf 'ndk_root=%s\n' "${DEST_DIR}" >> "$GITHUB_OUTPUT"
 
       - name: Set NDK env for Makefile
         run: |
@@ -78,20 +93,20 @@ jobs:
           make info || true
           echo "Environment summary:"
           echo "NDK_ROOT=$NDK_ROOT"
-          which aarch64-linux-android${API:-35}-clang || true
+          ls "${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin" | head -n 20 || true
           clang --version || true
 
       - name: Build (make preload)
         run: |
           set -euo pipefail
-          make preload -j$(nproc)
+          make preload -j"$(nproc)"
 
       - name: List produced artifacts
         run: |
           echo "Produced .so files:"
           find . -type f -name "*.so" -not -path "./.git/*" -print || true
           echo "Build tree:"
-          find build -maxdepth 3 -type f -print || true
+          find build -maxdepth 3 -type f -print 2>/dev/null || true
 
       - name: Collect .so assets
         id: collect
@@ -100,10 +115,10 @@ jobs:
           mkdir -p release_assets
           mapfile -t SO_FILES < <(find . -type f -name '*.so' -not -path './.git/*' -not -path './.github/*')
           if [ ${#SO_FILES[@]} -eq 0 ]; then
-            echo "No .so files were produced." >&2
+            echo "ERROR: Tidak ada file .so yang dihasilkan build." >&2
             exit 1
           fi
-          FILE_LIST=""
+          DESTS=()
           idx=0
           for f in "${SO_FILES[@]}"; do
             base=$(basename "$f")
@@ -112,18 +127,65 @@ jobs:
               dest="release_assets/${idx}_${base}"
             fi
             cp "$f" "$dest"
-            FILE_LIST="${FILE_LIST} ${dest}"
+            DESTS+=("$dest")
             idx=$((idx+1))
           done
-          FILE_LIST=$(echo $FILE_LIST)
-          printf '%s\n' "files=${FILE_LIST}" >> $GITHUB_OUTPUT
+          # Output multiline: aman untuk nama file apa pun & didukung release-action
+          {
+            echo "files<<EOF"
+            printf '%s\n' "${DESTS[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Collected ${#DESTS[@]} file(s)"
+
+      # FIX: .so SELALU bisa diunduh dari halaman run (bagian Artifacts),
+      # baik trigger tag maupun manual.
+      - name: Upload .so artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: preload-libs-${{ github.run_id }}
+          path: release_assets/
+          if-no-files-found: error
+          retention-days: 14
+
+      # FIX: release bisa dibuat dari push tag ATAU input manual
+      - name: Determine release tag
+        id: rel
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [[ -n "$INPUT_TAG" ]]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG=""
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [[ -n "$TAG" ]]; then
+            echo "create=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "create=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Release target: ${TAG:-<kosong: artifact only>}"
 
       - name: Create Release and upload .so asset(s)
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.rel.outputs.create == 'true'
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          tag: ${{ steps.rel.outputs.tag }}
+          name: Release ${{ steps.rel.outputs.tag }}
           files: ${{ steps.collect.outputs.files }}
           draft: false
           prerelease: false
+          allowUpdates: true   # re-run pada tag yang sama tidak akan gagal
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Build .so summary"
+            echo "- Trigger: \`${GITHUB_EVENT_NAME}\` / ref: \`${GITHUB_REF}\`"
+            echo "- NDK: \`${NDK_VERSION}\`"
+            echo "- Release dibuat: \`${{ steps.rel.outputs.create }}\` (tag: \`${{ steps.rel.outputs.tag }}\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
