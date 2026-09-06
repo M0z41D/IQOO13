@@ -15,7 +15,6 @@ permissions:
   contents: write
 
 env:
-  # Selaras dengan Makefile DEFAULT_NDK_ROOT
   NDK_VERSION: r29
 
 jobs:
@@ -32,9 +31,8 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential clang make unzip curl lld
+          sudo apt-get install -y build-essential clang make unzip curl lld file
 
-      # Cache arsip zip NDK agar run berikutnya tidak download ulang ±780 MB
       - name: Restore NDK archive cache
         uses: actions/cache@v4
         with:
@@ -45,8 +43,7 @@ jobs:
         id: download-ndk
         run: |
           set -euo pipefail
-          # FIX: nama arsip resmi sejak NDK r23+ adalah android-ndk-rXX-linux.zip
-          # (TANPA -x86_64). Nama lama menyebabkan 404 -> curl exit 22.
+          # Nama arsip resmi sejak NDK r23+: android-ndk-rXX-linux.zip (TANPA -x86_64)
           ARCHIVE_NAME="android-ndk-${NDK_VERSION}-linux.zip"
           DOWNLOAD_URL="https://dl.google.com/android/repository/${ARCHIVE_NAME}"
           ZIP="${RUNNER_TEMP}/ndk.zip"
@@ -60,21 +57,16 @@ jobs:
             curl -fsSL --retry 3 -o "${ZIP}" "${DOWNLOAD_URL}"
           fi
 
-          if [ -d "${DEST_DIR}" ]; then
-            echo "NDK sudah diekstrak di ${DEST_DIR}"
-          else
+          if [ ! -d "${DEST_DIR}" ]; then
             echo "Extracting ..."
             mkdir -p "${CACHE_DIR}"
             unzip -q "${ZIP}" -d "${CACHE_DIR}"
             if [ ! -d "${DEST_DIR}" ]; then
               EXTRACTED=$(find "${CACHE_DIR}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
-              if [ -n "${EXTRACTED}" ]; then
-                mv "${EXTRACTED}" "${DEST_DIR}"
-              fi
+              [ -n "${EXTRACTED}" ] && mv "${EXTRACTED}" "${DEST_DIR}"
             fi
           fi
 
-          # Validasi: pastikan toolchain benar-benar ada sebelum lanjut
           if [ ! -x "${DEST_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
             echo "ERROR: NDK tidak valid di ${DEST_DIR}" >&2
             exit 1
@@ -87,60 +79,82 @@ jobs:
           echo "ANDROID_NDK_HOME=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
           echo "${{ steps.download-ndk.outputs.ndk_root }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
-      - name: Show make info (diagnostics)
+      - name: Diagnostics (target Makefile & info)
         run: |
-          echo "Makefile info:"
+          echo "== Target yang tersedia di Makefile =="
+          grep -hE '^[A-Za-z0-9_.-]+ *:' Makefile 2>/dev/null | sort -u || true
+          echo "== make info =="
           make info || true
-          echo "Environment summary:"
           echo "NDK_ROOT=$NDK_ROOT"
-          ls "${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin" | head -n 20 || true
-          clang --version || true
 
-      - name: Build (make preload)
+      - name: Build
         run: |
           set -euo pipefail
-          make preload -j"$(nproc)"
+          # FIX: 'make preload' gagal karena target tidak ada.
+          # README repo: target default adalah iQOO-13 (jalankan 'make' polos).
+          # Variabel dilewat via command-line agar menimpa DEFAULT_NDK_ROOT Makefile.
+          MV="NDK_ROOT=${NDK_ROOT} ANDROID_NDK_HOME=${NDK_ROOT}"
+          if grep -qE '^preload *:' Makefile 2>/dev/null; then
+            echo "== Build target: preload =="
+            make ${MV} preload -j"$(nproc)"
+          else
+            echo "== Target 'preload' tidak ada; build target default (iQOO-13) =="
+            make ${MV} -j"$(nproc)"
+          fi
 
       - name: List produced artifacts
         run: |
           echo "Produced .so files:"
           find . -type f -name "*.so" -not -path "./.git/*" -print || true
           echo "Build tree:"
-          find build -maxdepth 3 -type f -print 2>/dev/null || true
+          find build out -maxdepth 3 -type f -print 2>/dev/null || true
 
-      - name: Collect .so assets
+      - name: Collect artifacts (.so, fallback ELF)
         id: collect
         run: |
           set -euo pipefail
           mkdir -p release_assets
-          mapfile -t SO_FILES < <(find . -type f -name '*.so' -not -path './.git/*' -not -path './.github/*')
-          if [ ${#SO_FILES[@]} -eq 0 ]; then
-            echo "ERROR: Tidak ada file .so yang dihasilkan build." >&2
+
+          mapfile -t FILES < <(find . -type f -name '*.so' -not -path './.git/*' -not -path './.github/*')
+
+          # FALLBACK: jika Makefile menghasilkan ELF tanpa ekstensi .so
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "Tidak ada *.so — mencari output ELF hasil build ..."
+            mapfile -t FILES < <(find . -type f \
+              -not -path './.git/*' -not -path './.github/*' \
+              -not -name '*.o' -not -name '*.a' -not -name '*.c' -not -name '*.h' \
+              -not -name '*.S' -not -name '*.md' -not -name '*.yml' -not -name '*.zip' \
+              -not -name 'Makefile' -not -name 'makefile' \
+              | while IFS= read -r f; do
+                  file -b "$f" 2>/dev/null | grep -q 'ELF' && printf '%s\n' "$f"
+                done)
+          fi
+
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "ERROR: Tidak ada artifact hasil build (.so maupun ELF)." >&2
             exit 1
           fi
+
           DESTS=()
           idx=0
-          for f in "${SO_FILES[@]}"; do
+          for f in "${FILES[@]}"; do
             base=$(basename "$f")
             dest="release_assets/${base}"
-            if [ -e "$dest" ]; then
-              dest="release_assets/${idx}_${base}"
-            fi
+            if [ -e "$dest" ]; then dest="release_assets/${idx}_${base}"; fi
             cp "$f" "$dest"
             DESTS+=("$dest")
             idx=$((idx+1))
           done
-          # Output multiline: aman untuk nama file apa pun & didukung release-action
+
           {
             echo "files<<EOF"
             printf '%s\n' "${DESTS[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-          echo "Collected ${#DESTS[@]} file(s)"
+          echo "Collected ${#DESTS[@]} file(s):"
+          printf '  %s\n' "${DESTS[@]}"
 
-      # FIX: .so SELALU bisa diunduh dari halaman run (bagian Artifacts),
-      # baik trigger tag maupun manual.
-      - name: Upload .so artifact
+      - name: Upload artifact (selalu, tiap run)
         uses: actions/upload-artifact@v4
         with:
           name: preload-libs-${{ github.run_id }}
@@ -148,7 +162,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # FIX: release bisa dibuat dari push tag ATAU input manual
       - name: Determine release tag
         id: rel
         env:
@@ -156,20 +169,14 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="$GITHUB_REF_NAME"
-          elif [[ -n "$INPUT_TAG" ]]; then
-            TAG="$INPUT_TAG"
           else
-            TAG=""
+            TAG="${INPUT_TAG}"
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          if [[ -n "$TAG" ]]; then
-            echo "create=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "create=false" >> "$GITHUB_OUTPUT"
-          fi
+          [ -n "${TAG}" ] && echo "create=true" >> "$GITHUB_OUTPUT" || echo "create=false" >> "$GITHUB_OUTPUT"
           echo "Release target: ${TAG:-<kosong: artifact only>}"
 
-      - name: Create Release and upload .so asset(s)
+      - name: Create Release and upload asset(s)
         if: steps.rel.outputs.create == 'true'
         uses: ncipollo/release-action@v1
         with:
@@ -178,14 +185,14 @@ jobs:
           files: ${{ steps.collect.outputs.files }}
           draft: false
           prerelease: false
-          allowUpdates: true   # re-run pada tag yang sama tidak akan gagal
+          allowUpdates: true
 
       - name: Job summary
         if: always()
         run: |
           {
-            echo "## Build .so summary"
+            echo "## Build summary"
             echo "- Trigger: \`${GITHUB_EVENT_NAME}\` / ref: \`${GITHUB_REF}\`"
             echo "- NDK: \`${NDK_VERSION}\`"
-            echo "- Release dibuat: \`${{ steps.rel.outputs.create }}\` (tag: \`${{ steps.rel.outputs.tag }}\`)"
+            echo "- Release: \`${{ steps.rel.outputs.create }}\` (tag: \`${{ steps.rel.outputs.tag }}\`)"
           } >> "$GITHUB_STEP_SUMMARY"
