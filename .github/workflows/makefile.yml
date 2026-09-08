@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Tag untuk Release (mis. v1.0.0). Kosongkan jika hanya ingin build.'
+        description: 'Tag Release (kosongkan untuk auto-increment/0.0.1, isi manual, atau ketik "none" untuk build saja)'
         required: false
         default: ''
       kernel_versions:
@@ -37,204 +37,201 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y build-essential clang make unzip curl lld file
 
-      - name: Restore NDK archive cache
+      - name: Cache Android NDK (extracted)
+        id: cache-ndk
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/ndk.zip
-          key: ndk-${{ env.NDK_VERSION }}-linux-zip
+          path: ${{ runner.temp }}/ndk-extracted/android-ndk-${{ env.NDK_VERSION }}
+          key: ndk-${{ env.NDK_VERSION }}-linux-x86_64
 
       - name: Download & extract Android NDK
-        id: download-ndk
+        id: setup-ndk
         run: |
           set -euo pipefail
-          ARCHIVE_NAME="android-ndk-${NDK_VERSION}-linux.zip"
-          DOWNLOAD_URL="https://dl.google.com/android/repository/${ARCHIVE_NAME}"
-          ZIP="${RUNNER_TEMP}/ndk.zip"
-          CACHE_DIR="${RUNNER_TEMP}/android-ndk-cache"
-          DEST_DIR="${CACHE_DIR}/android-ndk-${NDK_VERSION}"
-
-          if [ -f "${ZIP}" ]; then
-            echo "Arsip NDK ditemukan dari cache."
-          else
-            echo "Downloading ${DOWNLOAD_URL} ..."
-            curl -fsSL --retry 3 -o "${ZIP}" "${DOWNLOAD_URL}"
-          fi
-
-          if [ ! -d "${DEST_DIR}" ]; then
-            echo "Extracting ..."
-            mkdir -p "${CACHE_DIR}"
-            unzip -q "${ZIP}" -d "${CACHE_DIR}"
-            if [ ! -d "${DEST_DIR}" ]; then
-              EXTRACTED=$(find "${CACHE_DIR}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
-              [ -n "${EXTRACTED}" ] && mv "${EXTRACTED}" "${DEST_DIR}"
-            fi
-          fi
+          DEST_PARENT="${RUNNER_TEMP}/ndk-extracted"
+          DEST_DIR="${DEST_PARENT}/android-ndk-${NDK_VERSION}"
 
           if [ ! -x "${DEST_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
-            echo "ERROR: NDK tidak valid di ${DEST_DIR}" >&2
-            exit 1
-          fi
-          printf 'ndk_root=%s\n' "${DEST_DIR}" >> "$GITHUB_OUTPUT"
+            echo "NDK tidak ditemukan di cache. Mengunduh..."
+            mkdir -p "${DEST_PARENT}"
+            ZIP="${RUNNER_TEMP}/ndk.zip"
+            DOWNLOAD_URL="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+            curl -fsSL --retry 3 -o "${ZIP}" "${DOWNLOAD_URL}"
 
-      - name: Set NDK env for Makefile
-        run: |
-          echo "NDK_ROOT=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=${{ steps.download-ndk.outputs.ndk_root }}" >> $GITHUB_ENV
-          echo "${{ steps.download-ndk.outputs.ndk_root }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+            echo "Mengekstrak NDK..."
+            unzip -q "${ZIP}" -d "${DEST_PARENT}"
+            rm -f "${ZIP}"
+
+            if [ ! -d "${DEST_DIR}" ]; then
+              EXTRACTED=$(find "${DEST_PARENT}" -maxdepth 1 -type d -name "android-ndk-*" | head -n1)
+              [ -n "${EXTRACTED}" ] && mv "${EXTRACTED}" "${DEST_DIR}"
+            fi
+          else
+            echo "NDK valid ditemukan langsung dari cache."
+          fi
+
+          echo "NDK_ROOT=${DEST_DIR}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=${DEST_DIR}" >> $GITHUB_ENV
+          echo "${DEST_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Determine kernel versions to build
         id: kernels
         run: |
           set -euo pipefail
           INPUT="${{ inputs.kernel_versions }}"
-          
+
           if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
             VERSIONS="6.6.89 6.6.127"
-            echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
-            echo "Building all kernel versions: $VERSIONS"
           else
             VERSIONS=$(echo "$INPUT" | tr ',' ' ' | tr -s ' ')
-            echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
-            echo "Building kernel versions: $VERSIONS"
           fi
 
-      - name: Diagnostics (target Makefile & info)
-        run: |
-          echo "== Target yang tersedia di Makefile =="
-          grep -hE '^[A-Za-z0-9_.-]+ *:' Makefile 2>/dev/null | sort -u || true
-          echo "== make list-kernels =="
-          make list-kernels || true
-          echo "NDK_ROOT=$NDK_ROOT"
+          echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
+          echo "Target kernel versions: $VERSIONS"
 
       - name: Build for all kernel versions
         run: |
           set -euo pipefail
           VERSIONS="${{ steps.kernels.outputs.versions }}"
-          
-          echo "Starting build for kernel versions: $VERSIONS"
-          
+          mkdir -p release_assets
+
           for VERSION in $VERSIONS; do
             echo ""
             echo "========================================"
             echo "Building for kernel version: $VERSION"
             echo "========================================"
-            
+
+            make clean 2>/dev/null || true
+
             MV="NDK_ROOT=${NDK_ROOT} ANDROID_NDK_HOME=${NDK_ROOT} KERNEL_VERSION=${VERSION}"
-            
+
             if grep -qE '^preload *:' Makefile 2>/dev/null; then
-              echo "== Build target: preload (KERNEL_VERSION=$VERSION) =="
               make ${MV} preload -j"$(nproc)"
             else
-              echo "== Target 'preload' tidak ada; build target default =="
               make ${MV} -j"$(nproc)"
             fi
-            
-            echo "Build for kernel $VERSION completed"
+
+            SO_FILE=$(find build -type f -name "*.so" -path "*${VERSION}*" 2>/dev/null | head -n1 || true)
+
+            if [ -z "$SO_FILE" ]; then
+              SO_FILE=$(find build -type f -name "*.so" 2>/dev/null | head -n1 || true)
+            fi
+
+            if [ -f "$SO_FILE" ]; then
+              TARGET_NAME="release_assets/preload_${VERSION}.so"
+              cp "$SO_FILE" "$TARGET_NAME"
+              echo "Berhasil menyimpan: $TARGET_NAME"
+              rm -f "$SO_FILE"
+            else
+              echo "PERINGATAN: File .so untuk kernel $VERSION tidak ditemukan!" >&2
+            fi
           done
 
-      - name: List produced artifacts
-        run: |
-          echo "Produced .so files:"
-          find . -type f -name "*.so" -not -path "./.git/*" -print || true
-          echo ""
-          echo "Build tree (top 30 files):"
-          find build -maxdepth 5 -type f -print 2>/dev/null | head -30 || true
-          echo ""
-          echo "Full build directory structure:"
-          ls -laR build/ 2>/dev/null | head -100 || true
-
-      - name: Collect artifacts (.so per kernel)
-        id: collect
+      - name: Verify collected artifacts
         run: |
           set -euo pipefail
-          mkdir -p release_assets
-          
-          echo "Collecting artifacts..."
-          echo "Current directory: $(pwd)"
-          echo "Build directory contents:"
-          ls -la build/ 2>/dev/null || echo "No build directory"
-          
-          # Collect .so files from build directories
-          mapfile -t FILES < <(find build -type f -name "*.so" 2>/dev/null | sort)
-          
-          echo "Found ${#FILES[@]} .so files"
-          
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "ERROR: Tidak ada *.so ditemukan di build directory." >&2
-            echo "Listing all build artifacts:"
-            find build -type f 2>/dev/null | head -20 || true
-            exit 1
-          fi
-          
-          DESTS=()
-          idx=0
-          for f in "${FILES[@]}"; do
-            base=$(basename "$f")
-            dir=$(dirname "$f")
-            
-            echo "Processing: $f (dir: $dir)"
-            
-            if [[ "$dir" == *"6.6.89"* ]]; then
-              dest="release_assets/preload_6.6.89.so"
-            elif [[ "$dir" == *"6.6.127"* ]]; then
-              dest="release_assets/preload_6.6.127.so"
-            else
-              dest="release_assets/${base}"
-            fi
-            
-            if [ -e "$dest" ]; then
-              dest="release_assets/${idx}_${base}"
-            fi
-            
-            cp "$f" "$dest"
-            DESTS+=("$dest")
-            idx=$((idx+1))
-            
-            echo "Collected: $dest (from $f)"
-          done
-          
-          if [ ${#DESTS[@]} -eq 0 ]; then
-            echo "ERROR: Tidak ada artifact berhasil dikumpulkan." >&2
-            exit 1
-          fi
-          
-          {
-            echo "files<<EOF"
-            printf '%s\n' "${DESTS[@]}"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "Collected ${#DESTS[@]} file(s)"
-
-      - name: Display collected artifacts
-        if: success()
-        run: |
           echo "=== Collected Artifacts ==="
           ls -lah release_assets/
-          echo ""
-          echo "SHA256 checksums:"
-          sha256sum release_assets/*
 
-      - name: Upload artifacts (untuk semua kernel versions)
-        uses: actions/upload-artifact@v4
-        with:
-          name: preload-libs-multi-kernel-${{ github.run_id }}
-          path: release_assets/
-          if-no-files-found: error
-          retention-days: 14
+          COUNT=$(find release_assets -type f -name "*.so" | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: Tidak ada library .so yang terkumpul." >&2
+            exit 1
+          fi
+
+          echo ""
+          echo "SHA256 Checksums:"
+          sha256sum release_assets/* | tee release_assets/checksums.txt
 
       - name: Determine release tag
         id: rel
         env:
           INPUT_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          # Skenario 1: Dipicu lewat push tag git (v*)
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="$GITHUB_REF_NAME"
-          else
+            CREATE="true"
+
+          # Skenario 2: Dijalankan manual dengan perintah skip
+          elif [ "${INPUT_TAG,,}" = "none" ] || [ "${INPUT_TAG,,}" = "skip" ]; then
+            TAG=""
+            CREATE="false"
+
+          # Skenario 3: Diisi tag manual pada kolom input
+          elif [ -n "${INPUT_TAG}" ]; then
             TAG="${INPUT_TAG}"
+            CREATE="true"
+
+          # Skenario 4: Kolom dikosongkan -> Auto-detect dan auto-increment
+          else
+            echo "Mencari release terakhir dari repository..."
+            LATEST_TAG=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+
+            if [ -z "$LATEST_TAG" ]; then
+              echo "Belum ada release. Menggunakan tag awal: 0.0.1"
+              TAG="0.0.1"
+            else
+              echo "Release terakhir ditemukan: $LATEST_TAG"
+
+              PREFIX=""
+              RAW_VER="$LATEST_TAG"
+              if [[ "$LATEST_TAG" == v* ]]; then
+                PREFIX="v"
+                RAW_VER="${LATEST_TAG#v}"
+              fi
+
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$RAW_VER"
+
+              if [[ "$MAJOR" =~ ^[0-9]+$ ]] && [[ "$MINOR" =~ ^[0-9]+$ ]] && [[ "$PATCH" =~ ^[0-9]+$ ]]; then
+                NEW_PATCH=$((PATCH + 1))
+                TAG="${PREFIX}${MAJOR}.${MINOR}.${NEW_PATCH}"
+                echo "Auto-increment versi: $LATEST_TAG -> $TAG"
+              else
+                echo "Format tag sebelumnya ($LATEST_TAG) bukan semantic version. Fallback ke: 0.0.1"
+                TAG="0.0.1"
+              fi
+            fi
+            CREATE="true"
           fi
+
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          [ -n "${TAG}" ] && echo "create=true" >> "$GITHUB_OUTPUT" || echo "create=false" >> "$GITHUB_OUTPUT"
-          echo "Release target: ${TAG:-<kosong: artifact only>}"
+          echo "create=${CREATE}" >> "$GITHUB_OUTPUT"
+          echo "Release tag aktif: ${TAG:-<Build Only - Tanpa Release>}"
+
+      - name: Prepare release notes
+        if: steps.rel.outputs.create == 'true'
+        run: |
+          set -euo pipefail
+          cat << 'EOF' > release_notes.md
+          ## Build Details
+          - **NDK Version**: ${{ env.NDK_VERSION }}
+          - **Kernel Versions**: ${{ steps.kernels.outputs.versions }}
+
+          ## Files Included
+          EOF
+
+          for f in release_assets/*.so; do
+            [ -f "$f" ] || continue
+            echo "- \`$(basename "$f")\`" >> release_notes.md
+          done
+
+          echo "" >> release_notes.md
+          echo "### Checksums (SHA256)" >> release_notes.md
+          echo '```' >> release_notes.md
+          cat release_assets/checksums.txt >> release_notes.md
+          echo '```' >> release_notes.md
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: preload-libs-${{ github.run_id }}
+          path: release_assets/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Create Release and upload asset(s)
         if: steps.rel.outputs.create == 'true'
@@ -242,37 +239,22 @@ jobs:
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
           files: release_assets/*
+          body_path: release_notes.md
           draft: false
           prerelease: false
-          generate_release_notes: false
-          body: |
-            # Build Details
-            - **Kernel Versions**: ${{ steps.kernels.outputs.versions }}
-            - **NDK Version**: ${{ env.NDK_VERSION }}
-            
-            ## Files Included
-            Preload libraries (.so) untuk kernel versions:
-            - `preload_6.6.89.so` - Kernel 6.6.89
-            - `preload_6.6.127.so` - Kernel 6.6.127
 
       - name: Job summary
         if: always()
         run: |
           {
             echo "## Build Summary"
+            echo "- **Trigger**: \`${GITHUB_EVENT_NAME}\` (${GITHUB_REF})"
+            echo "- **NDK**: \`${NDK_VERSION}\`"
+            echo "- **Target Kernels**: \`${{ steps.kernels.outputs.versions }}\`"
+            echo "- **Release Tag**: \`${{ steps.rel.outputs.tag || 'None (Artifact Only)' }}\`"
             echo ""
-            echo "### Build Configuration"
-            echo "- **Trigger**: \`${GITHUB_EVENT_NAME}\` / ref: \`${GITHUB_REF}\`"
-            echo "- **NDK Version**: \`${NDK_VERSION}\`"
-            echo "- **Kernel Versions Built**: \`${{ steps.kernels.outputs.versions }}\`"
-            echo ""
-            echo "### Results"
-            echo "- **Release Created**: \`${{ steps.rel.outputs.create }}\`"
-            echo "- **Release Tag**: \`${{ steps.rel.outputs.tag }}\`"
-            echo "- **Artifacts Status**: ✅ Uploaded"
-            echo ""
-            echo "### Download Artifacts"
-            echo "Visit **Actions** → workflow run → **Artifacts** section"
-            echo "- preload_6.6.89.so"
-            echo "- preload_6.6.127.so"
+            echo "### Generated Files"
+            for f in release_assets/*.so; do
+              [ -f "$f" ] && echo "- \`$(basename "$f")\`"
+            done
           } >> "$GITHUB_STEP_SUMMARY"
